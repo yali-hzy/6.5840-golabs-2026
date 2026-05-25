@@ -19,7 +19,7 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 }
 
 
-type ValueVersion struct {
+type valueVersion struct {
 	value   string
 	version rpc.Tversion
 }
@@ -28,13 +28,13 @@ type KVServer struct {
 	mu sync.Mutex
 
 	// Your definitions here.
-	kvmap map[string]ValueVersion
+	kvmap map[string]valueVersion
 }
 
 func MakeKVServer() *KVServer {
 	kv := &KVServer{}
 	// Your code here.
-	kv.kvmap = make(map[string]ValueVersion)
+	kv.kvmap = make(map[string]valueVersion)
 	return kv
 }
 
@@ -69,7 +69,7 @@ func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
 			reply.Err = rpc.ErrVersion
 			return
 		}
-		kv.kvmap[key] = ValueVersion{
+		kv.kvmap[key] = valueVersion{
 			value:   value,
 			version: v.version + 1,
 		}
@@ -79,7 +79,7 @@ func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
 			reply.Err = rpc.ErrNoKey
 			return
 		}
-		kv.kvmap[key] = ValueVersion{
+		kv.kvmap[key] = valueVersion{
 			value:   value,
 			version: 1,
 		}
