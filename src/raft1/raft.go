@@ -215,11 +215,11 @@ type InstallSnapshotReply struct {
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
 	// fmt.Printf("%d receive InstallSnapshot from %d at term %d, lastIncludedIndex: %d, lastIncludedTerm: %d, snapshot size: %d\n", rf.me, args.LeaderId, args.Term, args.LastIncludedIndex, args.LastIncludedTerm, len(args.Data))
 	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	rf.persist()
 	rf.checkTerm(args.Term)
 	reply.Term = rf.currentTerm
 	if args.Term < rf.currentTerm {
-		rf.mu.Unlock()
 		return
 	}
 	rf.electionTimer = 0
@@ -227,7 +227,6 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		rf.state = 0
 	}
 	if args.LastIncludedIndex <= rf.snapshotIndex {
-		rf.mu.Unlock()
 		return
 	}
 	if args.LastIncludedIndex < rf.getLogLen() && rf.getLogEntry(args.LastIncludedIndex).Term == args.LastIncludedTerm {
@@ -251,7 +250,6 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	}
 	rf.applySnapshot = true
 	rf.applyCond.Signal()
-	rf.mu.Unlock()
 }
 
 func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
@@ -572,15 +570,19 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	reply.Success = true
 }
 
+func (rf *Raft) getInstallSnapshotArgs() InstallSnapshotArgs {
+	return InstallSnapshotArgs{
+		Term:              rf.currentTerm,
+		LeaderId:          rf.me,
+		LastIncludedIndex: rf.snapshotIndex,
+		LastIncludedTerm:  rf.snapshotTerm,
+		Data:              rf.snapshot,
+	}
+}
+
 func (rf *Raft) sendLogHelper(server int) {
 	if rf.nextIndex[server] <= rf.snapshotIndex {
-		args := InstallSnapshotArgs{
-			Term:              rf.currentTerm,
-			LeaderId:          rf.me,
-			LastIncludedIndex: rf.snapshotIndex,
-			LastIncludedTerm:  rf.snapshotTerm,
-			Data:              rf.snapshot,
-		}
+		args := rf.getInstallSnapshotArgs()
 		reply := InstallSnapshotReply{}
 		rf.mu.Unlock()
 		go rf.sendInstallSnapshot(server, &args, &reply)
@@ -661,13 +663,7 @@ func (rf *Raft) heartbeat() {
 			rf.mu.Lock()
 			if !rf.online[i] {
 				if rf.nextIndex[i] <= rf.snapshotIndex {
-					args := InstallSnapshotArgs{
-						Term:              rf.currentTerm,
-						LeaderId:          rf.me,
-						LastIncludedIndex: rf.snapshotIndex,
-						LastIncludedTerm:  rf.snapshotTerm,
-						Data:              rf.snapshot,
-					}
+					args := rf.getInstallSnapshotArgs()
 					reply := InstallSnapshotReply{}
 					rf.mu.Unlock()
 					go rf.sendInstallSnapshot(i, &args, &reply)
@@ -688,38 +684,6 @@ func (rf *Raft) heartbeat() {
 			}
 			rf.sendLogHelper(i)
 			rf.mu.Unlock()
-			// if rf.online[i] && rf.nextIndex[i] <= rf.snapshotIndex {
-			// 	args := InstallSnapshotArgs{
-			// 		Term:              rf.currentTerm,
-			// 		LeaderId:          rf.me,
-			// 		LastIncludedIndex: rf.snapshotIndex,
-			// 		LastIncludedTerm:  rf.snapshotTerm,
-			// 		Data:              rf.snapshot,
-			// 	}
-			// 	rf.mu.Unlock()
-			// 	reply := InstallSnapshotReply{}
-			// 	go rf.sendInstallSnapshot(i, &args, &reply)
-			// 	continue
-			// }
-			// prevLogIndex := rf.nextIndex[i] - 1
-			// prevLogTerm := rf.getLogEntry(prevLogIndex).Term
-			// var entries []LogEntry
-			// if rf.online[i] {
-			// 	entries = slices.Clone(rf.log[rf.nextIndex[i]-rf.snapshotIndex:])
-			// } else {
-			// 	entries = []LogEntry{}
-			// }
-			// args := AppendEntriesArgs{
-			// 	Term:         rf.currentTerm,
-			// 	LeaderId:     rf.me,
-			// 	PrevLogIndex: prevLogIndex,
-			// 	PrevLogTerm:  prevLogTerm,
-			// 	Entries:      entries,
-			// 	LeaderCommit: rf.commitIndex,
-			// }
-			// rf.mu.Unlock()
-			// reply := AppendEntriesReply{}
-			// go rf.sendAppendEntries(i, &args, &reply)
 		}
 	}
 }
@@ -755,11 +719,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		for i := range rf.peers {
 			if i != rf.me {
 				// fmt.Printf("%d receive new command, send append entries to %d at term %d, prevLogIndex: %d, prevLogTerm: %d, entries: %v, leaderCommit: %d snapshotIndex: %d\n", rf.me, i, rf.currentTerm, rf.nextIndex[i]-1, rf.getLogEntry(rf.nextIndex[i]-1).Term, rf.log[rf.nextIndex[i]-rf.snapshotIndex:], rf.commitIndex, rf.snapshotIndex)
-				// args := rf.getAppendEntriesArgs(i)
-				// rf.mu.Unlock()
-				// reply := AppendEntriesReply{}
-				// go rf.sendAppendEntries(i, &args, &reply)
-				// rf.mu.Lock()
 				rf.sendLogHelper(i)
 			}
 		}
@@ -814,7 +773,6 @@ func (rf *Raft) loop() {
 			// fmt.Printf("%d send heartbeat\n", rf.me)
 			rf.heartbeat()
 			// fmt.Printf("%d end heartbeat\n", rf.me)
-			// case <-rf.appendEntriesCh:
 		}
 	}
 }
