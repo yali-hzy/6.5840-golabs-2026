@@ -22,6 +22,12 @@ import (
 )
 
 
+type LogEntry struct {
+	Term int
+	Command any
+}
+
+
 // A Go object implementing a single Raft peer.
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
@@ -36,7 +42,7 @@ type Raft struct {
 	// Persistent state on all servers: (Updated on stable storage before responding to RPCs)
 	currentTerm int
 	votedFor    int
-	// log         []LogEntry
+	log         []LogEntry
 	
 	// Volatile state on all servers:
 	commitIndex int
@@ -197,8 +203,8 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	// fmt.Printf("%d(%d) receive RequestVote reply from %d at term %d: %v\n", rf.me, rf.state, server, reply.Term, reply.VoteGranted)
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	rf.checkTerm(reply.Term)
+	rf.mu.Unlock()
 	ch <- ok && reply.VoteGranted
 	return ok
 }
@@ -212,13 +218,27 @@ func (rf *Raft) checkTerm(term int) {
 	}
 }
 
+func (rf *Raft) becomeLeader() {
+	rf.state = 2
+	rf.heartbeatTimer = 0
+	rf.electionTimer = 0
+	select {
+	case rf.heartbeatCh <- struct{}{}:
+	default:
+	}
+	for i := range rf.peers {
+		rf.nextIndex[i] = len(rf.log)
+		rf.matchIndex[i] = 0
+	}
+}
+
 
 func (rf *Raft) startElection() {
 	// fmt.Printf("%d start election at term %d\n", rf.me, rf.currentTerm + 1)
 	rf.mu.Lock()
+	rf.electionTimer = rand.Int63() % 150
 	rf.votedFor = rf.me
 	rf.state = 1
-	rf.electionTimer = rand.Int63() % 150
 	rf.currentTerm ++
 	term := rf.currentTerm
 	rf.mu.Unlock()
@@ -238,10 +258,22 @@ func (rf *Raft) startElection() {
 	}
 	for i := 0; i < len(rf.peers) - 1; i++ {
 		// fmt.Printf("%d wait for vote %d\n", rf.me, i)
-		if <- ch {
-			votes ++
+		timeout := false
+		select {
+		case ok := <-ch:
+			if ok {
+				votes ++
+			}
+		case <-rf.needElectionCh:
+			timeout = true
 		}
-		if votes > len(rf.peers) / 2 {
+		rf.mu.Lock()
+		if rf.state != 1 || term != rf.currentTerm {
+			rf.mu.Unlock()
+			return
+		}
+		rf.mu.Unlock()
+		if votes > len(rf.peers) / 2 || timeout {
 			break
 		}
 		// fmt.Printf("%d receive vote %d, total votes: %d\n", rf.me, i, votes)
@@ -249,16 +281,15 @@ func (rf *Raft) startElection() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	if votes > len(rf.peers) / 2 && rf.state == 1 && term == rf.currentTerm {
-		rf.state = 2
+		rf.becomeLeader()
 	}
-	// fmt.Printf("election result: %d(%d) get %d votes\n", rf.me, rf.state, votes)
-	if rf.state == 2 {
+	if rf.state == 1 {
 		select {
-		case rf.heartbeatCh <- struct{}{}:
-			// fmt.Printf("%d send heartbeat immediately after election\n", rf.me)
+		case rf.needElectionCh <- struct{}{}:
 		default:
 		}
 	}
+	// fmt.Printf("election result: %d(%d) get %d votes\n", rf.me, rf.state, votes)
 }
 
 
@@ -267,7 +298,7 @@ type AppendEntriesArgs struct {
 	LeaderId int
 	PrevLogIndex int
 	PrevLogTerm int
-	// Entries []LogEntry
+	Entries []LogEntry
 	LeaderCommit int
 }
 
@@ -322,6 +353,7 @@ func (rf *Raft) heartbeat() {
 				LeaderId: rf.me,
 				PrevLogIndex: 0, // TODO
 				PrevLogTerm: 0, // TODO
+				Entries: []LogEntry{},
 				LeaderCommit: rf.commitIndex,
 			}
 			reply := AppendEntriesReply{}
@@ -348,7 +380,17 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (3B).
-
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	isLeader = rf.state == 2
+	if isLeader {
+		index = len(rf.log)
+		term = rf.currentTerm
+		rf.log = append(rf.log, LogEntry{
+			Term: term,
+			Command: command,
+		})
+	}
 
 	return index, term, isLeader
 }
@@ -399,6 +441,7 @@ func (rf *Raft) loop() {
 			// fmt.Printf("%d send heartbeat\n", rf.me)
 			rf.heartbeat()
 			// fmt.Printf("%d end heartbeat\n", rf.me)
+		// case <-rf.appendEntriesCh:
 		}
 	}
 }
@@ -421,6 +464,16 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (3A, 3B, 3C).
+	rf.currentTerm = 0
+	rf.votedFor = -1
+	rf.log = make([]LogEntry, 1)
+
+	rf.commitIndex = 0
+	rf.lastApplied = 0
+
+	rf.nextIndex = make([]int, len(peers))
+	rf.matchIndex = make([]int, len(peers))
+
 	rf.needElectionCh = make(chan struct{}, 1)
 	rf.heartbeatCh = make(chan struct{}, 1)
 	go rf.loop()
