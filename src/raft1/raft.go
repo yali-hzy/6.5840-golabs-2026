@@ -9,7 +9,7 @@ package raft
 
 import (
 	//	"bytes"
-	"fmt"
+	// "fmt"
 	"math/rand"
 	"slices"
 	"sort"
@@ -59,6 +59,7 @@ type Raft struct {
 	heartbeatCh chan struct{}
 	electionTimer int64
 	heartbeatTimer int64
+	online []bool
 }
 
 // return currentTerm and whether this server
@@ -333,6 +334,28 @@ type AppendEntriesArgs struct {
 type AppendEntriesReply struct {
 	Term int
 	Success bool
+	XTerm int
+	XIndex int
+	XLen int
+}
+
+
+func (rf *Raft) getAppendEntriesArgs(server int) AppendEntriesArgs {
+	prevLogIndex := rf.nextIndex[server] - 1
+	prevLogTerm := rf.log[prevLogIndex].Term
+	return AppendEntriesArgs{
+		Term: rf.currentTerm,
+		LeaderId: rf.me,
+		PrevLogIndex: prevLogIndex,
+		PrevLogTerm: prevLogTerm,
+		Entries: slices.Clone(rf.log[rf.nextIndex[server]:]),
+		LeaderCommit: rf.commitIndex,
+	}
+}
+
+
+func logEntryCmp(e LogEntry, t int) int {
+	return e.Term - t
 }
 
 
@@ -341,18 +364,22 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	rf.checkTerm(args.Term)
+	reply.Term = rf.currentTerm
+	reply.Success = false
+	reply.XLen = len(rf.log)
 	if args.Term < rf.currentTerm {
-		reply.Term = rf.currentTerm
-		reply.Success = false
 		return
 	}
 	rf.electionTimer = 0
 	if rf.state == 1 {
 		rf.state = 0
 	}
-	if args.PrevLogIndex >= len(rf.log) || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
-		reply.Term = rf.currentTerm
-		reply.Success = false
+	if args.PrevLogIndex >= len(rf.log) {
+		return
+	}
+	if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+		reply.XTerm = rf.log[args.PrevLogIndex].Term
+		reply.XIndex, _ = slices.BinarySearchFunc(rf.log, reply.XTerm, logEntryCmp)
 		return
 	}
 	for i := 0; i < len(args.Entries); i++ {
@@ -379,10 +406,12 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	// fmt.Printf("%d send append entries to %d at term %d, prevLogIndex: %d, prevLogTerm: %d, entries: %v, leaderCommit: %d\n", rf.me, server, args.Term, args.PrevLogIndex, args.PrevLogTerm, args.Entries, args.LeaderCommit)
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	// fmt.Printf("%d receive append entries reply from %d at term %d: success %v\n", rf.me, server, reply.Term, reply.Success)
+	rf.mu.Lock()
 	if !ok {
+		rf.online[server] = false
+		rf.mu.Unlock()
 		return
 	}
-	rf.mu.Lock()
 	rf.checkTerm(reply.Term)
 	if rf.state != 2 || args.Term != rf.currentTerm {
 		rf.mu.Unlock()
@@ -399,22 +428,34 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 		if n > rf.commitIndex && rf.log[n].Term == rf.currentTerm {
 			rf.updateCommitIndex(n)
 		}
+		if !rf.online[server] {
+			args := rf.getAppendEntriesArgs(server)
+			rf.mu.Unlock()
+			reply := AppendEntriesReply{}
+			go rf.sendAppendEntries(server, &args, &reply)
+			rf.mu.Lock()
+		}
+		rf.online[server] = true
 		rf.mu.Unlock()
 	} else {
-		rf.nextIndex[server] = rf.nextIndex[server] - 1
-		if rf.nextIndex[server] < 1 {
-			panic(fmt.Sprintf("nextIndex of server %d is less than 1", server))
+		if reply.XTerm != 0 {
+			_, found := slices.BinarySearchFunc(rf.log, reply.XTerm, logEntryCmp)
+			if found {
+				rf.nextIndex[server], _ = slices.BinarySearchFunc(rf.log, reply.XTerm + 1, logEntryCmp)
+			} else {
+				rf.nextIndex[server] = reply.XIndex
+			}
+		} else if reply.XLen > 0 {
+			rf.nextIndex[server] = reply.XLen
+		} else {
+			panic("AppendEntries fail with no XTerm and XLen")
 		}
-		prevLogIndex := rf.nextIndex[server] - 1
-		prevLogTerm := rf.log[prevLogIndex].Term
-		args := AppendEntriesArgs{
-			Term: rf.currentTerm,
-			LeaderId: rf.me,
-			PrevLogIndex: prevLogIndex,
-			PrevLogTerm: prevLogTerm,
-			Entries: slices.Clone(rf.log[rf.nextIndex[server]:]),
-			LeaderCommit: rf.commitIndex,
-		}
+		// rf.nextIndex[server] = rf.nextIndex[server] - 1
+		// if rf.nextIndex[server] < 1 {
+		// 	panic(fmt.Sprintf("nextIndex of server %d is less than 1", server))
+		// }
+		args := rf.getAppendEntriesArgs(server)
+		rf.online[server] = true
 		rf.mu.Unlock()
 		reply := AppendEntriesReply{}
 		go rf.sendAppendEntries(server, &args, &reply)
@@ -435,12 +476,18 @@ func (rf *Raft) heartbeat() {
 			rf.mu.Lock()
 			prevLogIndex := rf.nextIndex[i] - 1
 			prevLogTerm := rf.log[prevLogIndex].Term
+			var entries []LogEntry
+			if rf.online[i] {
+				entries = slices.Clone(rf.log[rf.nextIndex[i]:])
+			} else {
+				entries = []LogEntry{}
+			}
 			args := AppendEntriesArgs{
 				Term: rf.currentTerm,
 				LeaderId: rf.me,
 				PrevLogIndex: prevLogIndex,
 				PrevLogTerm: prevLogTerm,
-				Entries: slices.Clone(rf.log[rf.nextIndex[i]:]),
+				Entries: entries,
 				LeaderCommit: rf.commitIndex,
 			}
 			rf.mu.Unlock()
@@ -584,6 +631,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	rf.needElectionCh = make(chan struct{}, 1)
 	rf.heartbeatCh = make(chan struct{}, 1)
+	rf.online = make([]bool, len(peers))
+	rf.online[me] = true
 	go rf.loop()
 
 	// initialize from state persisted before a crash
