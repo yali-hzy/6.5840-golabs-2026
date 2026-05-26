@@ -8,7 +8,7 @@ package raft
 // raft interface.
 
 import (
-	//	"bytes"
+	"bytes"
 	// "fmt"
 	"math/rand"
 	"slices"
@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	//	"6.5840/labgob"
+	"6.5840/labgob"
 	"6.5840/labrpc"
 	"6.5840/raftapi"
 	"6.5840/tester1"
@@ -92,6 +92,14 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// raftstate := w.Bytes()
 	// rf.persister.Save(raftstate, nil)
+
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.log)
+	raftstate := w.Bytes()
+	rf.persister.Save(raftstate, nil)
 }
 
 
@@ -113,6 +121,21 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
 	// }
+
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var currentTerm int
+	var votedFor int
+	var log []LogEntry
+	if d.Decode(&currentTerm) != nil ||
+		d.Decode(&votedFor) != nil ||
+		d.Decode(&log) != nil {
+		return
+	} else {
+		rf.currentTerm = currentTerm
+		rf.votedFor = votedFor
+		rf.log = log
+	}
 }
 
 // how many bytes in Raft's persisted log?
@@ -156,6 +179,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (3A, 3B).
 	// fmt.Printf("%d(%d) receive RequestVote from %d at term %d\n", rf.me, rf.state, args.CandidateId, args.Term)
 	rf.mu.Lock()
+	rf.persist()
 	defer rf.mu.Unlock()
 	rf.checkTerm(args.Term)
 	if args.Term < rf.currentTerm {
@@ -171,6 +195,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateId
+		rf.persist()
 		return
 	}
 	reply.Term = rf.currentTerm
@@ -224,6 +249,7 @@ func (rf *Raft) checkTerm(term int) {
 		rf.currentTerm = term
 		rf.state = 0
 		rf.votedFor = -1
+		rf.persist()
 	}
 }
 
@@ -256,6 +282,7 @@ func (rf *Raft) startElection() {
 	rf.electionTimer = rand.Int63() % 150
 	lastLogIndex := len(rf.log) - 1
 	lastLogTerm := rf.log[lastLogIndex].Term
+	rf.persist()
 	rf.mu.Unlock()
 	ch := make(chan bool, len(rf.peers) - 1)
 	for i := range rf.peers {
@@ -362,6 +389,7 @@ func logEntryCmp(e LogEntry, t int) int {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	// fmt.Printf("%d receive heartbeat from %d at arg term %d with term %d\n", rf.me, args.LeaderId, args.Term, rf.currentTerm)
 	rf.mu.Lock()
+	rf.persist()
 	defer rf.mu.Unlock()
 	rf.checkTerm(args.Term)
 	reply.Term = rf.currentTerm
@@ -394,6 +422,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			break
 		}
 	}
+	rf.persist()
 	if args.LeaderCommit > rf.commitIndex {
 		rf.updateCommitIndex(min(args.LeaderCommit, args.PrevLogIndex + len(args.Entries)))
 	}
@@ -525,20 +554,12 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			Term: term,
 			Command: command,
 		})
+		rf.persist()
 		for i := range rf.peers {
 			if i != rf.me {
-				prevLogIndex := rf.nextIndex[i] - 1
-				prevLogTerm := rf.log[prevLogIndex].Term
-				args := AppendEntriesArgs{
-					Term: rf.currentTerm,
-					LeaderId: rf.me,
-					PrevLogIndex: prevLogIndex,
-					PrevLogTerm: prevLogTerm,
-					Entries: slices.Clone(rf.log[rf.nextIndex[i]:]),
-					LeaderCommit: rf.commitIndex,
-				}
-				reply := AppendEntriesReply{}
+				args := rf.getAppendEntriesArgs(i)
 				rf.mu.Unlock()
+				reply := AppendEntriesReply{}
 				go rf.sendAppendEntries(i, &args, &reply)
 				rf.mu.Lock()
 			}
