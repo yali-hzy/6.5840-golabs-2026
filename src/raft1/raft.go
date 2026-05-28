@@ -471,7 +471,7 @@ func (rf *Raft) applyLoop() {
 		}
 		rf.applyCond.L.Unlock()
 		for _, msg := range msgs {
-			// fmt.Printf("%d apply %v at index %d\n", rf.me, msg, msg.CommandIndex)
+			// fmt.Printf("raft %d apply %v at index %d\n", rf.me, msg, msg.CommandIndex)
 			rf.applyCh <- msg
 		}
 	}
@@ -703,7 +703,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := -1
 	term := -1
 	isLeader := true
-
+	// fmt.Printf("raft: %d receive new command %v at term %d log len: %d\n", rf.me, command, rf.currentTerm, rf.getLogLen())
 	// Your code here (3B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
