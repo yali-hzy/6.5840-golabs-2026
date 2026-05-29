@@ -382,7 +382,8 @@ func (rf *Raft) becomeLeader() {
 }
 
 func (rf *Raft) startElection() {
-	// fmt.Printf("%d start election at term %d\n", rf.me, rf.currentTerm+1)
+	// fmt.Printf("%d start election at term %d last 3 log entries: %v \n", rf.me, rf.currentTerm+1, rf.log[max(0, len(rf.log)-3):])
+	// tester.Annotate(fmt.Sprintf("Server %d", rf.me), "start election", fmt.Sprintf("start election at term %d", rf.currentTerm+1))
 	rf.mu.Lock()
 	if rf.state != 1 {
 		rf.mu.Unlock()

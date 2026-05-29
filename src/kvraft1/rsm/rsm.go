@@ -118,6 +118,7 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 	defer rsm.mu.Unlock()
 	rsm.id++
 	op := Op{Me: rsm.me, Id: rsm.id, Req: req}
+	// fmt.Printf("server %d submit op: id %d, req %v\n", rsm.me, op.Id, req)
 	index, term, isLeader := rsm.rf.Start(op)
 	rsm.resultCh[index] = make(chan any, 1)
 	defer delete(rsm.resultCh, index)
@@ -137,6 +138,7 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 		}
 		rfTerm, rfIsLeader := rsm.rf.GetState() // may be a problem.
 		if !rfIsLeader || rfTerm > term || rsm.index2id[index] != rsm.getId(op.Id) {
+			// fmt.Printf("server %d submit op: index %d, term %d, id %d, wrong leader\n", rsm.me, index, term, op.Id)
 			return rpc.ErrWrongLeader, nil
 		}
 		rsm.cond.Wait()
