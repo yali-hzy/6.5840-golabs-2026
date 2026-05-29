@@ -25,69 +25,6 @@ func MakeClerk(clnt *tester.Clnt, servers []string) kvtest.IKVClerk {
 	return ck
 }
 
-// I don't know why the original Call doesn't work for timeout cases. This func is AI generated.
-const rpcCallTimeout = 500 * time.Millisecond
-
-// timedCall runs ck.clnt.Call with local copies of args/reply to avoid data races.
-// It returns true if the RPC completed before timeout and copies the reply back.
-func (ck *Clerk) timedCall(server string, svcMethod string, args interface{}, reply interface{}, timeout time.Duration) bool {
-	type callResult struct {
-		ok    bool
-		reply interface{}
-	}
-	resCh := make(chan callResult, 1)
-
-	switch reply.(type) {
-	case *rpc.GetReply:
-		var localArgs rpc.GetArgs
-		if p, ok := args.(*rpc.GetArgs); ok {
-			localArgs = *p
-		} else if v, ok := args.(rpc.GetArgs); ok {
-			localArgs = v
-		} else {
-			return false
-		}
-		go func() {
-			var lr rpc.GetReply
-			ok := ck.clnt.Call(server, svcMethod, &localArgs, &lr)
-			resCh <- callResult{ok: ok, reply: lr}
-		}()
-
-	case *rpc.PutReply:
-		var localArgs rpc.PutArgs
-		if p, ok := args.(*rpc.PutArgs); ok {
-			localArgs = *p
-		} else if v, ok := args.(rpc.PutArgs); ok {
-			localArgs = v
-		} else {
-			return false
-		}
-		go func() {
-			var lr rpc.PutReply
-			ok := ck.clnt.Call(server, svcMethod, &localArgs, &lr)
-			resCh <- callResult{ok: ok, reply: lr}
-		}()
-
-	default:
-		return false
-	}
-
-	select {
-	case r := <-resCh:
-		if r.ok {
-			switch out := reply.(type) {
-			case *rpc.GetReply:
-				*out = r.reply.(rpc.GetReply)
-			case *rpc.PutReply:
-				*out = r.reply.(rpc.PutReply)
-			}
-		}
-		return r.ok
-	case <-time.After(timeout):
-		return false
-	}
-}
-
 func (ck *Clerk) Leader() int {
 	return ck.leader
 }
@@ -114,12 +51,12 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 		if !ck.leaderAvailable {
 			ck.mu.Unlock()
 			// fmt.Printf("Get %s from server %d\n", key, leader)
-			ok = ck.timedCall(ck.servers[leader], "KVServer.Get", &args, &reply, rpcCallTimeout)
+			ok = ck.clnt.Call(ck.servers[leader], "KVServer.Get", &args, &reply)
 		} else {
 			// fmt.Printf("Get %s from leader %d\n", key, ck.leader)
 			l := ck.leader
 			ck.mu.Unlock()
-			ok = ck.timedCall(ck.servers[l], "KVServer.Get", &args, &reply, rpcCallTimeout)
+			ok = ck.clnt.Call(ck.servers[l], "KVServer.Get", &args, &reply)
 		}
 		// fmt.Printf("Get %s got reply %+v\n", key, reply)
 		if ok && (reply.Err == rpc.OK || reply.Err == rpc.ErrNoKey) {
@@ -174,12 +111,12 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 		if !ck.leaderAvailable {
 			// fmt.Printf("Put %s=%s (version %d) to server %d\n", key, value, version, leader)
 			ck.mu.Unlock()
-			ok = ck.timedCall(ck.servers[leader], "KVServer.Put", &args, &reply, rpcCallTimeout)
+			ok = ck.clnt.Call(ck.servers[leader], "KVServer.Put", &args, &reply)
 		} else {
 			// fmt.Printf("Put %s=%s (version %d) to leader %d\n", key, value, version, ck.leader)
 			l := ck.leader
 			ck.mu.Unlock()
-			ok = ck.timedCall(ck.servers[l], "KVServer.Put", &args, &reply, rpcCallTimeout)
+			ok = ck.clnt.Call(ck.servers[l], "KVServer.Put", &args, &reply)
 		}
 		// fmt.Printf("Put %s=%s (version %d) got reply %+v\n", key, value, version, reply)
 		if !ok || reply.Err == rpc.ErrWrongLeader {

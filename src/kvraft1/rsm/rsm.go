@@ -3,6 +3,7 @@ package rsm
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	"6.5840/kvsrv1/rpc"
 	"6.5840/labrpc"
@@ -104,6 +105,19 @@ func (rsm *RSM) Raft() raftapi.Raft {
 	return rsm.rf
 }
 
+func (rsm *RSM) checkLeader(term int, ch chan struct{}) {
+	for {
+		time.Sleep(100 * time.Millisecond)
+		if currentTerm, isLeader := rsm.rf.GetState(); !isLeader || currentTerm > term {
+			ch <- struct{}{}
+			rsm.mu.Lock()
+			rsm.cond.Broadcast()
+			rsm.mu.Unlock()
+			return
+		}
+	}
+}
+
 // Submit a command to Raft, and wait for it to be committed.  It
 // should return ErrWrongLeader if client should find new leader and
 // try again.
@@ -128,16 +142,19 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 	}
 	rsm.index2id[index] = rsm.getId(op.Id)
 	rsm.cond.Broadcast()
+	leaderChanged := make(chan struct{}, 1)
+	go rsm.checkLeader(term, leaderChanged)
 	for {
 		// fmt.Printf("server %d submit op: index %d, term %d, id %d\n", rsm.me, index, term, op.Id)
 		select {
 		case res := <-rsm.resultCh[index]:
 			// fmt.Printf("server %d submit op: index %d, term %d, id %d, res %v\n", rsm.me, index, term, op.Id, res)
 			return rpc.OK, res
+		case <-leaderChanged:
+			return rpc.ErrWrongLeader, nil
 		default:
 		}
-		rfTerm, rfIsLeader := rsm.rf.GetState() // may be a problem.
-		if !rfIsLeader || rfTerm > term || rsm.index2id[index] != rsm.getId(op.Id) {
+		if rsm.index2id[index] != rsm.getId(op.Id) {
 			// fmt.Printf("server %d submit op: index %d, term %d, id %d, wrong leader\n", rsm.me, index, term, op.Id)
 			return rpc.ErrWrongLeader, nil
 		}
