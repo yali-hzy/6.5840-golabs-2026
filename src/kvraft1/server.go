@@ -1,6 +1,10 @@
 package kvraft
 
 import (
+	"bytes"
+	"fmt"
+	"sync"
+
 	"6.5840/kvraft1/rsm"
 	"6.5840/kvsrv1/rpc"
 	"6.5840/labgob"
@@ -8,9 +12,9 @@ import (
 	"6.5840/tester1"
 )
 
-type valueVersion struct {
-	value   string
-	version rpc.Tversion
+type ValueVersion struct {
+	Value   string
+	Version rpc.Tversion
 }
 
 type KVServer struct {
@@ -18,7 +22,8 @@ type KVServer struct {
 	rsm *rsm.RSM
 
 	// Your definitions here.
-	kvmap map[string]valueVersion
+	mu    sync.Mutex
+	kvmap map[string]ValueVersion
 }
 
 // To type-cast req to the right type, take a look at Go's type switches or type
@@ -30,53 +35,52 @@ func (kv *KVServer) DoOp(req any) any {
 	// Your code here
 	switch req := req.(type) {
 	case rpc.GetArgs:
-		reply := rpc.GetReply{}
-		if v, ok := kv.kvmap[req.Key]; ok {
-			reply.Value = v.value
-			reply.Version = v.version
-			reply.Err = rpc.OK
-		} else {
-			reply.Err = rpc.ErrNoKey
-		}
-		return reply
+		return kv.doGet(&req)
 	case rpc.PutArgs:
-		reply := rpc.PutReply{}
-		key := req.Key
-		value := req.Value
-		version := req.Version
-		if v, ok := kv.kvmap[key]; ok {
-			if version != v.version {
-				reply.Err = rpc.ErrVersion
-				return reply
-			}
-			kv.kvmap[key] = valueVersion{
-				value:   value,
-				version: v.version + 1,
-			}
-			reply.Err = rpc.OK
-		} else {
-			if version != 0 {
-				reply.Err = rpc.ErrNoKey
-				return reply
-			}
-			kv.kvmap[key] = valueVersion{
-				value:   value,
-				version: 1,
-			}
-			reply.Err = rpc.OK
-		}
-		return reply
+		return kv.doPut(&req)
 	}
 	return nil
 }
 
 func (kv *KVServer) Snapshot() []byte {
 	// Your code here
-	return nil
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	// fmt.Printf("server %d snapshot: kvmap %v\n", kv.me, kv.kvmap)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(kv.kvmap)
+	return w.Bytes()
 }
 
 func (kv *KVServer) Restore(data []byte) {
 	// Your code here
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	// fmt.Printf("server %d restore: data %v\n", kv.me, data)
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var kvmap map[string]ValueVersion
+	if d.Decode(&kvmap) != nil {
+		fmt.Printf("server %d restore: decode error\n", kv.me)
+	} else {
+		kv.kvmap = kvmap
+	}
+	// fmt.Printf("server %d restore: kvmap %v\n", kv.me, kv.kvmap)
+}
+
+func (kv *KVServer) doGet(args *rpc.GetArgs) rpc.GetReply {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	reply := rpc.GetReply{}
+	if v, ok := kv.kvmap[args.Key]; ok {
+		reply.Value = v.Value
+		reply.Version = v.Version
+		reply.Err = rpc.OK
+	} else {
+		reply.Err = rpc.ErrNoKey
+	}
+	return reply
 }
 
 func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
@@ -91,6 +95,39 @@ func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
 		reply.Version = rep.(rpc.GetReply).Version
 		reply.Err = rpc.OK
 	}
+}
+
+func (kv *KVServer) doPut(args *rpc.PutArgs) rpc.PutReply {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	reply := rpc.PutReply{}
+	key := args.Key
+	value := args.Value
+	version := args.Version
+	// fmt.Printf("before server %d doPut: key %s, value %s, version %d, kvmap %v\n", kv.me, key, value, version, kv.kvmap)
+	// defer fmt.Printf("after server %d doPut: key %s, value %s, version %d, kvmap %v\n", kv.me, key, value, version, kv.kvmap)
+	if v, ok := kv.kvmap[key]; ok {
+		if version != v.Version {
+			reply.Err = rpc.ErrVersion
+			return reply
+		}
+		kv.kvmap[key] = ValueVersion{
+			Value:   value,
+			Version: v.Version + 1,
+		}
+		reply.Err = rpc.OK
+	} else {
+		if version != 0 {
+			reply.Err = rpc.ErrNoKey
+			return reply
+		}
+		kv.kvmap[key] = ValueVersion{
+			Value:   value,
+			Version: 1,
+		}
+		reply.Err = rpc.OK
+	}
+	return reply
 }
 
 func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
@@ -118,7 +155,12 @@ func StartKVServer(servers []*labrpc.ClientEnd, gid tester.Tgid, me int, persist
 
 	kv.rsm = rsm.MakeRSM(servers, me, persister, maxraftstate, kv)
 	// You may need initialization code here.
-	kv.kvmap = make(map[string]valueVersion)
+	kv.kvmap = make(map[string]ValueVersion)
+	kv.mu = sync.Mutex{}
+	snapshot := persister.ReadSnapshot()
+	if len(snapshot) > 0 {
+		kv.Restore(snapshot)
+	}
 	return []any{kv, kv.rsm.Raft()}
 }
 

@@ -41,10 +41,11 @@ type RSM struct {
 	maxraftstate int // snapshot if log grows this big
 	sm           StateMachine
 	// Your definitions here.
-	cond     *sync.Cond
-	id       int64
-	resultCh map[int]chan any
-	index2id map[int]string
+	cond        *sync.Cond
+	id          int64
+	resultCh    map[int]chan any
+	index2id    map[int]string
+	lastApplied int
 }
 
 // servers[] contains the ports of the set of
@@ -76,11 +77,25 @@ func MakeRSM(servers []*labrpc.ClientEnd, me int, persister *tester.Persister, m
 	rsm.resultCh = make(map[int]chan any)
 	rsm.index2id = make(map[int]string)
 	go rsm.reader()
+	go rsm.snapshotter()
 	return rsm
 }
 
 func (rsm *RSM) getId(index int64) string {
 	return fmt.Sprintf("%d-%d", rsm.me, index)
+}
+
+func (rsm *RSM) snapshotter() {
+	for {
+		time.Sleep(100 * time.Millisecond)
+		rsm.mu.Lock()
+		rfStateSize := rsm.rf.PersistBytes()
+		if rsm.maxraftstate != -1 && rfStateSize > rsm.maxraftstate / 10 * 9 {
+			snapshot := rsm.sm.Snapshot()
+			rsm.rf.Snapshot(rsm.lastApplied, snapshot)
+		}
+		rsm.mu.Unlock()
+	}
 }
 
 func (rsm *RSM) reader() {
@@ -90,11 +105,19 @@ func (rsm *RSM) reader() {
 			// fmt.Printf("server %d apply msg: index %d, command %v\n", rsm.me, msg.CommandIndex, msg.Command)
 			op := msg.Command.(Op)
 			rep := rsm.sm.DoOp(op.Req)
+			rsm.lastApplied = msg.CommandIndex
 			index := msg.CommandIndex
 			rsm.index2id[index] = rsm.getId(op.Id)
 			if op.Me == rsm.me && rsm.resultCh[index] != nil {
 				rsm.resultCh[index] <- rep
 			}
+			rsm.cond.Broadcast()
+			rsm.mu.Unlock()
+		} else if msg.SnapshotValid && !msg.CommandValid {
+			rsm.mu.Lock()
+			// fmt.Printf("server %d restore snapshot: index %d, term %d\n", rsm.me, msg.SnapshotIndex, msg.SnapshotTerm)
+			rsm.sm.Restore(msg.Snapshot)
+			rsm.lastApplied = msg.SnapshotIndex
 			rsm.cond.Broadcast()
 			rsm.mu.Unlock()
 		}
