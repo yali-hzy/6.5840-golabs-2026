@@ -155,11 +155,9 @@ func StartKVServer(servers []*labrpc.ClientEnd, gid tester.Tgid, me int, persist
 
 	kv.rsm = rsm.MakeRSM(servers, me, persister, maxraftstate, kv)
 	// You may need initialization code here.
-	kv.kvmap = make(map[string]ValueVersion)
-	kv.mu = sync.Mutex{}
 	snapshot := persister.ReadSnapshot()
-	if len(snapshot) > 0 {
-		kv.Restore(snapshot)
+	if len(snapshot) == 0 {
+		kv.kvmap = make(map[string]ValueVersion)
 	}
 	return []any{kv, kv.rsm.Raft()}
 }

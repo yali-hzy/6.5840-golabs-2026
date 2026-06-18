@@ -76,6 +76,10 @@ func MakeRSM(servers []*labrpc.ClientEnd, me int, persister *tester.Persister, m
 	rsm.cond = sync.NewCond(&rsm.mu)
 	rsm.resultCh = make(map[int]chan any)
 	rsm.index2id = make(map[int]string)
+	snapshot := persister.ReadSnapshot()
+	if len(snapshot) > 0 {
+		rsm.sm.Restore(snapshot)
+	}
 	go rsm.reader()
 	go rsm.snapshotter()
 	return rsm
