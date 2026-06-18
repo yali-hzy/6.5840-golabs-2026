@@ -47,30 +47,28 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 	leader := 0
 	for ; ; time.Sleep(100 * time.Millisecond) {
 		var ok bool
+		var target int
 		ck.mu.Lock()
 		if !ck.leaderAvailable {
-			ck.mu.Unlock()
-			// fmt.Printf("Get %s from server %d\n", key, leader)
-			ok = ck.clnt.Call(ck.servers[leader], "KVServer.Get", &args, &reply)
+			target = leader
 		} else {
-			// fmt.Printf("Get %s from leader %d\n", key, ck.leader)
-			l := ck.leader
-			ck.mu.Unlock()
-			ok = ck.clnt.Call(ck.servers[l], "KVServer.Get", &args, &reply)
+			target = ck.leader
 		}
+		ck.mu.Unlock()
+		ok = ck.clnt.Call(ck.servers[target], "KVServer.Get", &args, &reply)
 		// fmt.Printf("Get %s got reply %+v\n", key, reply)
 		if ok && (reply.Err == rpc.OK || reply.Err == rpc.ErrNoKey) {
 			ck.mu.Lock()
 			if !ck.leaderAvailable {
 				ck.leaderAvailable = true
-				ck.leader = leader
+				ck.leader = target
 			}
 			ck.mu.Unlock()
 			break
 		}
-		if ok && reply.Err == rpc.ErrWrongLeader {
+		if !ok || reply.Err == rpc.ErrWrongLeader {
 			ck.mu.Lock()
-			if ck.leaderAvailable {
+			if ck.leaderAvailable && ck.leader == target {
 				ck.leaderAvailable = false
 				leader = 0
 			} else {
@@ -107,22 +105,20 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 	leader := 0
 	for ; ; time.Sleep(100 * time.Millisecond) {
 		var ok bool
+		var target int
 		ck.mu.Lock()
 		if !ck.leaderAvailable {
-			// fmt.Printf("Put %s=%s (version %d) to server %d\n", key, value, version, leader)
-			ck.mu.Unlock()
-			ok = ck.clnt.Call(ck.servers[leader], "KVServer.Put", &args, &reply)
+			target = leader
 		} else {
-			// fmt.Printf("Put %s=%s (version %d) to leader %d\n", key, value, version, ck.leader)
-			l := ck.leader
-			ck.mu.Unlock()
-			ok = ck.clnt.Call(ck.servers[l], "KVServer.Put", &args, &reply)
+			target = ck.leader
 		}
+		ck.mu.Unlock()
+		ok = ck.clnt.Call(ck.servers[target], "KVServer.Put", &args, &reply)
 		// fmt.Printf("Put %s=%s (version %d) got reply %+v\n", key, value, version, reply)
 		if !ok || reply.Err == rpc.ErrWrongLeader {
 			first = false
 			ck.mu.Lock()
-			if ck.leaderAvailable {
+			if ck.leaderAvailable && ck.leader == target {
 				ck.leaderAvailable = false
 				leader = 0
 			} else {
@@ -135,7 +131,7 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 			ck.mu.Lock()
 			if !ck.leaderAvailable {
 				ck.leaderAvailable = true
-				ck.leader = leader
+				ck.leader = target
 			}
 			ck.mu.Unlock()
 		}

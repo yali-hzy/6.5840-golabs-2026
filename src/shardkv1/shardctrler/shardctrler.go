@@ -82,13 +82,13 @@ func (sck *ShardCtrler) ChangeConfigTo(new *shardcfg.ShardConfig) {
 				cachedNewClerks[newGid] = newClerk
 			}
 			// fmt.Println()
-			state, err := oldClerk.FreezeShard((shardcfg.Tshid)(i), (shardcfg.Tnum)(ver+1))
+			state, err := oldClerk.FreezeShard((shardcfg.Tshid)(i), new.Num)
 			// fmt.Printf("ChangeConfigTo: freeze shard %d from gid %d, state size %d, err %v\n", i, oldGid, len(state), err)
 			if err != rpc.OK {
 				continue
 			}
-			newClerk.InstallShard((shardcfg.Tshid)(i), state, (shardcfg.Tnum)(ver+1))
-			oldClerk.DeleteShard((shardcfg.Tshid)(i), (shardcfg.Tnum)(ver+1))
+			newClerk.InstallShard((shardcfg.Tshid)(i), state, new.Num)
+			oldClerk.DeleteShard((shardcfg.Tshid)(i), new.Num)
 		}
 	}
 	err = sck.Put("config", new.String(), ver)
