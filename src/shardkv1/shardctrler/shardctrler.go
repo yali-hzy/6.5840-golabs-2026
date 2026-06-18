@@ -5,13 +5,16 @@ package shardctrler
 //
 
 import (
+	// "fmt"
+	"slices"
 
 	"6.5840/kvsrv1"
+	"6.5840/kvsrv1/rpc"
 	"6.5840/kvtest1"
 	"6.5840/shardkv1/shardcfg"
+	"6.5840/shardkv1/shardgrp"
 	"6.5840/tester1"
 )
-
 
 // ShardCtrler for the controller and kv clerk.
 type ShardCtrler struct {
@@ -45,6 +48,9 @@ func (sck *ShardCtrler) InitController() {
 // lists shardgrp shardcfg.Gid1 for all shards.
 func (sck *ShardCtrler) InitConfig(cfg *shardcfg.ShardConfig) {
 	// Your code here
+	config := cfg.String()
+	sck.Put("config", config, 0)
+	// fmt.Printf("InitConfig: put config %s\n", config)
 }
 
 // Called by the tester to ask the controller to change the
@@ -53,12 +59,49 @@ func (sck *ShardCtrler) InitConfig(cfg *shardcfg.ShardConfig) {
 // controller.
 func (sck *ShardCtrler) ChangeConfigTo(new *shardcfg.ShardConfig) {
 	// Your code here.
+	val, ver, err := sck.Get("config")
+	// fmt.Printf("ChangeConfigTo: get config %s, ver %d, err %v\n", val, ver, err)
+	if err != rpc.OK {
+		panic("config not found")
+	}
+	old := shardcfg.FromString(val)
+	cachedOldClerks := make(map[tester.Tgid]*shardgrp.Clerk)
+	cachedNewClerks := make(map[tester.Tgid]*shardgrp.Clerk)
+	for i := range shardcfg.NShards {
+		oldGid, oldSrvs, _ := old.GidServers((shardcfg.Tshid)(i))
+		newGid, newSrvs, _ := new.GidServers((shardcfg.Tshid)(i))
+		if old.Shards[i] != new.Shards[i] || !slices.Equal(oldSrvs, newSrvs) {
+			oldClerk, ok := cachedOldClerks[oldGid]
+			if !ok {
+				oldClerk = shardgrp.MakeClerk(sck.clnt, oldSrvs)
+				cachedOldClerks[oldGid] = oldClerk
+			}
+			newClerk, ok := cachedNewClerks[newGid]
+			if !ok {
+				newClerk = shardgrp.MakeClerk(sck.clnt, newSrvs)
+				cachedNewClerks[newGid] = newClerk
+			}
+			// fmt.Println()
+			state, err := oldClerk.FreezeShard((shardcfg.Tshid)(i), (shardcfg.Tnum)(ver+1))
+			// fmt.Printf("ChangeConfigTo: freeze shard %d from gid %d, state size %d, err %v\n", i, oldGid, len(state), err)
+			if err != rpc.OK {
+				continue
+			}
+			newClerk.InstallShard((shardcfg.Tshid)(i), state, (shardcfg.Tnum)(ver+1))
+			oldClerk.DeleteShard((shardcfg.Tshid)(i), (shardcfg.Tnum)(ver+1))
+		}
+	}
+	err = sck.Put("config", new.String(), ver)
+	// fmt.Printf("ChangeConfigTo: put config %s, ver %d, err %v\n", new.String(), ver, err)
 }
-
 
 // Return the current configuration
 func (sck *ShardCtrler) Query() *shardcfg.ShardConfig {
 	// Your code here.
-	return nil
+	v, _, err := sck.Get("config")
+	if err != rpc.OK {
+		panic("config not found")
+	}
+	cfg := shardcfg.FromString(v)
+	return cfg
 }
-

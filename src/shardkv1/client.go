@@ -9,6 +9,11 @@ package shardkv
 //
 
 import (
+	"fmt"
+	"sync"
+	"time"
+
+	"6.5840/shardkv1/shardcfg"
 	"6.5840/shardkv1/shardgrp"
 
 	"6.5840/kvsrv1/rpc"
@@ -20,8 +25,9 @@ import (
 type Clerk struct {
 	clnt *tester.Clnt
 	sck  *shardctrler.ShardCtrler
-	rcks   map[tester.Tgid]*shardgrp.Clerk
+	rcks map[tester.Tgid]*shardgrp.Clerk
 	// You will have to modify this struct.
+	mu sync.Mutex
 }
 
 // The tester calls MakeClerk and passes in a shardctrler so that
@@ -41,6 +47,23 @@ func (ck *Clerk) GetClerk(gid tester.Tgid) (*shardgrp.Clerk, bool) {
 	return rck, ok
 }
 
+func (ck *Clerk) getClerkByKey(key string, cacheValid bool) *shardgrp.Clerk {
+	ck.mu.Lock()
+	defer ck.mu.Unlock()
+	cfg := ck.sck.Query()
+	shard := shardcfg.Key2Shard(key)
+	gid, srvs, ok := cfg.GidServers(shard)
+	// fmt.Printf("getClerkByKey: key %s, shard %d, gid %d, servers %v\n", key, shard, gid, srvs)
+	if !ok {
+		panic(fmt.Sprintf("Get: no group for shard %d\n", shard))
+	}
+	rck, ok := ck.GetClerk(gid)
+	if !ok || !cacheValid {
+		rck = shardgrp.MakeClerk(ck.clnt, srvs)
+		ck.rcks[gid] = rck
+	}
+	return rck
+}
 
 // Get a key from a shardgrp.  You can use shardcfg.Key2Shard(key) to
 // find the shard responsible for the key and ck.sck.Query() to read
@@ -49,11 +72,34 @@ func (ck *Clerk) GetClerk(gid tester.Tgid) (*shardgrp.Clerk, bool) {
 // calling shardgrp.MakeClerk(ck.clnt, servers).
 func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 	// You will have to modify this function.
-	return "", 0, ""
+	cacheValid := true
+	for ; ; time.Sleep(100 * time.Millisecond) {
+		rck := ck.getClerkByKey(key, cacheValid)
+		value, version, err := rck.Get(key)
+		if err != rpc.ErrWrongGroup {
+			// fmt.Printf("Get: key %s, value %s, version %d, err %v\n", key, value, version, err)
+			return value, version, err
+		}
+		cacheValid = false
+	}
 }
 
 // Put a key to a shard group.
 func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 	// You will have to modify this function.
-	return ""
+	cacheValid := true
+	for ; ; time.Sleep(100 * time.Millisecond) {
+		rck := ck.getClerkByKey(key, cacheValid)
+		err := rck.Put(key, value, version)
+		if err != rpc.ErrWrongGroup {
+			if err == rpc.ErrVersion && !cacheValid {
+				// fmt.Printf("Put: maybe version error for key %s, value %s, version %d\n", key, value, version)
+				return rpc.ErrMaybe
+			}
+			// fmt.Printf("Put: key %s, value %s, version %d, err %v\n", key, value, version, err)
+			return err
+		}
+		cacheValid = false
+		// fmt.Printf("Put: ErrWrongGroup for key %s, value %s, version %d\n", key, value, version)
+	}
 }
