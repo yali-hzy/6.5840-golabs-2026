@@ -110,6 +110,31 @@ func (sck *ShardCtrler) changeConfigTo(new *shardcfg.ShardConfig) {
 	// fmt.Printf("changeConfigTo: put config %s, ver %d, err %v\n", new.String(), ver, err)
 }
 
+func (sck *ShardCtrler) putNewConfig(new *shardcfg.ShardConfig) bool {
+	_, newVer, err := sck.Get("new_config")
+	if err == rpc.ErrNoKey {
+		newVer = 0
+	}
+	// fmt.Printf("ChangeConfigTo: get new_config ver %d new config %s, err %v\n", newVer, new.String(), err)
+	if newVer != rpc.Tversion(new.Num-2) {
+		return false
+	}
+	err = sck.Put("new_config", new.String(), newVer)
+	if err == rpc.OK {
+		return true
+	}
+	if err == rpc.ErrVersion {
+		return false
+	}
+	if err == rpc.ErrMaybe {
+		cfg, getVer, _ := sck.Get("new_config")
+		if getVer == rpc.Tversion(new.Num-1) && cfg == new.String() {
+			return true
+		}
+	}
+	return false
+}
+
 // Called once by the tester to supply the first configuration.  You
 // can marshal ShardConfig into a string using shardcfg.String(), and
 // then Put it in the kvsrv for the controller at version 0.  You can
@@ -128,12 +153,9 @@ func (sck *ShardCtrler) InitConfig(cfg *shardcfg.ShardConfig) {
 // controller.
 func (sck *ShardCtrler) ChangeConfigTo(new *shardcfg.ShardConfig) {
 	// Your code here.
-	_, newVer, err := sck.Get("new_config")
-	if err == rpc.ErrNoKey {
-		newVer = 0
+	if !sck.putNewConfig(new) {
+		return
 	}
-	err = sck.Put("new_config", new.String(), newVer)
-	// fmt.Printf("ChangeConfigTo: put new_config %s, ver %d, err %v\n", new.String(), newVer, err)
 	sck.changeConfigTo(new)
 }
 
