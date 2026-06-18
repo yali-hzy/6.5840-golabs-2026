@@ -749,9 +749,7 @@ func (rf *Raft) ticker() {
 			}
 		}
 
-		// pause for a random amount of time between 50 and 350
-		// milliseconds.
-		ms := 50 + (rand.Int63() % 300)
+		ms := 50 + (rand.Int63() % 100)
 		if rf.state != 2 {
 			rf.electionTimer += ms
 		}
