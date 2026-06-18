@@ -7,6 +7,7 @@ package shardctrler
 import (
 	// "fmt"
 	"slices"
+	"time"
 
 	"6.5840/kvsrv1"
 	"6.5840/kvsrv1/rpc"
@@ -39,28 +40,26 @@ func MakeShardCtrler(clnt *tester.Clnt) *ShardCtrler {
 // controller. In part A, this method doesn't need to do anything. In
 // B and C, this method implements recovery.
 func (sck *ShardCtrler) InitController() {
+	currentCfgStr, _, err := sck.Get("config")
+	// fmt.Printf("InitController: get config %s, err %v\n", currentCfgStr, err)
+	if err == rpc.ErrNoKey {
+		return
+	}
+	newCfgStr, _, err := sck.Get("new_config")
+	// fmt.Printf("InitController: get new_config %s, err %v\n", newCfgStr, err)
+	if err == rpc.ErrNoKey {
+		return
+	}
+	currentCfg := shardcfg.FromString(currentCfgStr)
+	newCfg := shardcfg.FromString(newCfgStr)
+	if newCfg.Num > currentCfg.Num {
+		sck.changeConfigTo(newCfg)
+	}
 }
 
-// Called once by the tester to supply the first configuration.  You
-// can marshal ShardConfig into a string using shardcfg.String(), and
-// then Put it in the kvsrv for the controller at version 0.  You can
-// pick the key to name the configuration.  The initial configuration
-// lists shardgrp shardcfg.Gid1 for all shards.
-func (sck *ShardCtrler) InitConfig(cfg *shardcfg.ShardConfig) {
-	// Your code here
-	config := cfg.String()
-	sck.Put("config", config, 0)
-	// fmt.Printf("InitConfig: put config %s\n", config)
-}
-
-// Called by the tester to ask the controller to change the
-// configuration from the current one to new.  While the controller
-// changes the configuration it may be superseded by another
-// controller.
-func (sck *ShardCtrler) ChangeConfigTo(new *shardcfg.ShardConfig) {
-	// Your code here.
+func (sck *ShardCtrler) changeConfigTo(new *shardcfg.ShardConfig) {
 	val, ver, err := sck.Get("config")
-	// fmt.Printf("ChangeConfigTo: get config %s, ver %d, err %v\n", val, ver, err)
+	// fmt.Printf("changeConfigTo: get config %s, ver %d, err %v\n", val, ver, err)
 	if err != rpc.OK {
 		panic("config not found")
 	}
@@ -82,17 +81,60 @@ func (sck *ShardCtrler) ChangeConfigTo(new *shardcfg.ShardConfig) {
 				cachedNewClerks[newGid] = newClerk
 			}
 			// fmt.Println()
-			state, err := oldClerk.FreezeShard((shardcfg.Tshid)(i), new.Num)
-			// fmt.Printf("ChangeConfigTo: freeze shard %d from gid %d, state size %d, err %v\n", i, oldGid, len(state), err)
+			var state []byte
+			for ; ; time.Sleep(100 * time.Millisecond) {
+				state, err = oldClerk.FreezeShard((shardcfg.Tshid)(i), new.Num)
+				if err != rpc.ErrWrongGroup {
+					break
+				}
+			}
+			// fmt.Printf("changeConfigTo: freeze shard %d from gid %d, state size %d, err %v\n", i, oldGid, len(state), err)
 			if err != rpc.OK {
 				continue
 			}
-			newClerk.InstallShard((shardcfg.Tshid)(i), state, new.Num)
-			oldClerk.DeleteShard((shardcfg.Tshid)(i), new.Num)
+			for ; ; time.Sleep(100 * time.Millisecond) {
+				err = newClerk.InstallShard((shardcfg.Tshid)(i), state, new.Num)
+				if err != rpc.ErrWrongGroup {
+					break
+				}
+			}
+			for ; ; time.Sleep(100 * time.Millisecond) {
+				err = oldClerk.DeleteShard((shardcfg.Tshid)(i), new.Num)
+				if err != rpc.ErrWrongGroup {
+					break
+				}
+			}
 		}
 	}
 	err = sck.Put("config", new.String(), ver)
-	// fmt.Printf("ChangeConfigTo: put config %s, ver %d, err %v\n", new.String(), ver, err)
+	// fmt.Printf("changeConfigTo: put config %s, ver %d, err %v\n", new.String(), ver, err)
+}
+
+// Called once by the tester to supply the first configuration.  You
+// can marshal ShardConfig into a string using shardcfg.String(), and
+// then Put it in the kvsrv for the controller at version 0.  You can
+// pick the key to name the configuration.  The initial configuration
+// lists shardgrp shardcfg.Gid1 for all shards.
+func (sck *ShardCtrler) InitConfig(cfg *shardcfg.ShardConfig) {
+	// Your code here
+	config := cfg.String()
+	sck.Put("config", config, 0)
+	// fmt.Printf("InitConfig: put config %s\n", config)
+}
+
+// Called by the tester to ask the controller to change the
+// configuration from the current one to new.  While the controller
+// changes the configuration it may be superseded by another
+// controller.
+func (sck *ShardCtrler) ChangeConfigTo(new *shardcfg.ShardConfig) {
+	// Your code here.
+	_, newVer, err := sck.Get("new_config")
+	if err == rpc.ErrNoKey {
+		newVer = 0
+	}
+	err = sck.Put("new_config", new.String(), newVer)
+	// fmt.Printf("ChangeConfigTo: put new_config %s, ver %d, err %v\n", new.String(), newVer, err)
+	sck.changeConfigTo(new)
 }
 
 // Return the current configuration

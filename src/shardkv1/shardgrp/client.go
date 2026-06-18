@@ -49,7 +49,7 @@ func (ck *Clerk) foundLeader(leader int) {
 	}
 }
 
-func getErr(reply any) *rpc.Err {
+func getErrPtr(reply any) *rpc.Err {
 	switch reply := reply.(type) {
 	case *rpc.GetReply:
 		return &reply.Err
@@ -66,7 +66,7 @@ func getErr(reply any) *rpc.Err {
 	}
 }
 
-func (ck *Clerk) callLoop(method string, args any, reply any, putLike bool) bool {
+func (ck *Clerk) callLoop(method string, args any, reply any, putLike bool) {
 	leader := 0
 	first := true
 	attempts := 0
@@ -86,36 +86,33 @@ func (ck *Clerk) callLoop(method string, args any, reply any, putLike bool) bool
 		if ok {
 			attempts = 0
 		}
-		if !ok || (*getErr(reply) == rpc.ErrWrongLeader) {
+		if !ok || (*getErrPtr(reply) == rpc.ErrWrongLeader) {
 			leader = ck.tryNextLeader(target)
 			if !ok {
 				attempts++
 				if attempts > len(ck.servers) {
-					return false
+					*getErrPtr(reply) = rpc.ErrWrongGroup
+					break
 				}
 			}
 			first = false
 			continue
 		}
-		if ok && (*getErr(reply) != rpc.ErrWrongLeader) {
+		if ok && (*getErrPtr(reply) != rpc.ErrWrongLeader) {
 			ck.foundLeader(leader)
 			break
 		}
 	}
-	if putLike && *getErr(reply) == rpc.ErrVersion && !first {
-		*getErr(reply) = rpc.ErrMaybe
+	if putLike && *getErrPtr(reply) == rpc.ErrVersion && !first {
+		*getErrPtr(reply) = rpc.ErrMaybe
 	}
-	return true
 }
 
 func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 	// Your code here
 	args := rpc.GetArgs{Key: key}
 	reply := rpc.GetReply{}
-	ok := ck.callLoop("KVServer.Get", &args, &reply, false)
-	if !ok {
-		reply.Err = rpc.ErrWrongGroup
-	}
+	ck.callLoop("KVServer.Get", &args, &reply, false)
 	return reply.Value, reply.Version, reply.Err
 }
 
@@ -123,10 +120,7 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 	// Your code here
 	args := rpc.PutArgs{Key: key, Value: value, Version: version}
 	reply := rpc.PutReply{}
-	ok := ck.callLoop("KVServer.Put", &args, &reply, true)
-	if !ok {
-		reply.Err = rpc.ErrWrongGroup
-	}
+	ck.callLoop("KVServer.Put", &args, &reply, true)
 	return reply.Err
 }
 
@@ -143,7 +137,7 @@ func (ck *Clerk) InstallShard(s shardcfg.Tshid, state []byte, num shardcfg.Tnum)
 	// Your code here
 	args := shardrpc.InstallShardArgs{Shard: s, State: state, Num: num}
 	reply := shardrpc.InstallShardReply{}
-	ck.callLoop("KVServer.InstallShard", &args, &reply, true)
+	ck.callLoop("KVServer.InstallShard", &args, &reply, false)
 	return reply.Err
 }
 
@@ -151,6 +145,6 @@ func (ck *Clerk) DeleteShard(s shardcfg.Tshid, num shardcfg.Tnum) rpc.Err {
 	// Your code here
 	args := shardrpc.DeleteShardArgs{Shard: s, Num: num}
 	reply := shardrpc.DeleteShardReply{}
-	ck.callLoop("KVServer.DeleteShard", &args, &reply, true)
+	ck.callLoop("KVServer.DeleteShard", &args, &reply, false)
 	return reply.Err
 }
