@@ -93,7 +93,7 @@ func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
 	} else {
 		reply.Value = rep.(rpc.GetReply).Value
 		reply.Version = rep.(rpc.GetReply).Version
-		reply.Err = rpc.OK
+		reply.Err = rep.(rpc.GetReply).Err
 	}
 }
 
