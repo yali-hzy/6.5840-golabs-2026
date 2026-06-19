@@ -92,7 +92,7 @@ func (ck *Clerk) callLoop(method string, args any, reply any, putLike bool) {
 				attempts++
 				if attempts > len(ck.servers) {
 					*getErrPtr(reply) = rpc.ErrWrongGroup
-					break
+					return
 				}
 			}
 			first = false
@@ -137,7 +137,7 @@ func (ck *Clerk) InstallShard(s shardcfg.Tshid, state []byte, num shardcfg.Tnum)
 	// Your code here
 	args := shardrpc.InstallShardArgs{Shard: s, State: state, Num: num}
 	reply := shardrpc.InstallShardReply{}
-	ck.callLoop("KVServer.InstallShard", &args, &reply, false)
+	ck.callLoop("KVServer.InstallShard", &args, &reply, true)
 	return reply.Err
 }
 
@@ -145,6 +145,6 @@ func (ck *Clerk) DeleteShard(s shardcfg.Tshid, num shardcfg.Tnum) rpc.Err {
 	// Your code here
 	args := shardrpc.DeleteShardArgs{Shard: s, Num: num}
 	reply := shardrpc.DeleteShardReply{}
-	ck.callLoop("KVServer.DeleteShard", &args, &reply, false)
+	ck.callLoop("KVServer.DeleteShard", &args, &reply, true)
 	return reply.Err
 }
